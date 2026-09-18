@@ -1,0 +1,643 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Dictate to Handwriting</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Patrick+Hand&family=Nunito:wght@400;600;700&display=swap');
+
+  :root{
+    --cover-blue:#2E5266;
+    --sky:#6FA8C4;
+    --paper:#FFFCF5;
+    --rule:#A9C6D6;
+    --margin-red:#D6555A;
+    --graphite:#2B2B2B;
+    --panel-bg:#EAF2F6;
+    --ok-green:#4C8C6B;
+  }
+
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;}
+  body{
+    font-family:'Nunito',sans-serif;
+    background:var(--panel-bg);
+    color:var(--graphite);
+    min-height:100vh;
+    padding:24px;
+  }
+
+  .app{
+    max-width:900px;
+    margin:0 auto;
+  }
+
+  header{
+    display:flex;
+    align-items:center;
+    gap:14px;
+    margin-bottom:20px;
+  }
+  header .tab{
+    width:14px;height:44px;
+    background:var(--cover-blue);
+    border-radius:3px 0 0 3px;
+  }
+  header h1{
+    font-size:1.4rem;
+    margin:0;
+    color:var(--cover-blue);
+    letter-spacing:0.2px;
+  }
+  header p{
+    margin:2px 0 0;
+    font-size:0.85rem;
+    color:#5b7a8a;
+  }
+
+  .controls{
+    background:#fff;
+    border:1px solid var(--rule);
+    border-radius:10px;
+    padding:16px 18px;
+    margin-bottom:18px;
+    display:flex;
+    flex-wrap:wrap;
+    align-items:center;
+    gap:12px;
+  }
+
+  button{
+    font-family:'Nunito',sans-serif;
+    font-weight:700;
+    font-size:0.9rem;
+    border:none;
+    border-radius:8px;
+    padding:10px 16px;
+    cursor:pointer;
+    transition:transform .08s ease, box-shadow .08s ease;
+  }
+  button:active{transform:translateY(1px);}
+  button:focus-visible{outline:3px solid var(--sky); outline-offset:2px;}
+
+  #mic-btn{
+    background:var(--margin-red);
+    color:#fff;
+    display:flex;
+    align-items:center;
+    gap:8px;
+  }
+  #mic-btn.listening{
+    background:var(--ok-green);
+    box-shadow:0 0 0 4px rgba(76,140,107,0.2);
+  }
+  #mic-btn .dot{
+    width:9px;height:9px;border-radius:50%;
+    background:#fff;
+  }
+  #mic-btn.listening .dot{
+    animation:pulse 1.1s infinite ease-in-out;
+  }
+  @keyframes pulse{
+    0%,100%{opacity:1;}
+    50%{opacity:0.35;}
+  }
+
+  #clear-btn, #print-btn, #undo-btn{
+    background:var(--panel-bg);
+    color:var(--cover-blue);
+    border:1px solid var(--rule);
+  }
+  #undo-btn:disabled{
+    opacity:0.45;
+    cursor:not-allowed;
+  }
+  #print-btn{
+    background:var(--cover-blue);
+    color:#fff;
+    margin-left:auto;
+  }
+
+  .status{
+    font-size:0.82rem;
+    color:#5b7a8a;
+    min-width:150px;
+  }
+
+  .size-controls{
+    display:flex;
+    align-items:center;
+    gap:8px;
+    font-size:0.85rem;
+    color:var(--cover-blue);
+  }
+  .size-controls input[type=range]{
+    width:100px;
+  }
+
+  textarea{
+    width:100%;
+    min-height:90px;
+    font-family:'Nunito',sans-serif;
+    font-size:0.95rem;
+    padding:12px 14px;
+    border-radius:10px;
+    border:1px solid var(--rule);
+    resize:vertical;
+    margin-bottom:18px;
+  }
+  textarea:focus-visible{outline:3px solid var(--sky); outline-offset:1px;}
+
+  .label{
+    font-size:0.78rem;
+    font-weight:700;
+    color:var(--cover-blue);
+    text-transform:uppercase;
+    letter-spacing:0.06em;
+    margin:0 0 6px;
+  }
+
+  /* --- the exercise-book page --- */
+  .page-wrap{
+    background:#dfe9ee;
+    border-radius:10px;
+    padding:22px;
+  }
+  .page{
+    position:relative;
+    background:var(--paper);
+    border:1px solid #ddd6c4;
+    border-radius:2px;
+    box-shadow:0 2px 10px rgba(0,0,0,0.08);
+    padding:36px 28px 36px 64px;
+    min-height:520px;
+    overflow:hidden;
+  }
+  .margin-line{
+    position:absolute;
+    top:0; bottom:0; left:46px;
+    width:2px;
+    background:var(--margin-red);
+    opacity:0.75;
+  }
+  .writing{
+    font-family:'Patrick Hand',cursive;
+    color:#213047;
+    white-space:pre-wrap;
+    word-wrap:break-word;
+  }
+  .writing .band{
+    position:relative;
+  }
+
+  /* four-line ruling built with layered gradients, one band per text line */
+  .ruled{
+    background-repeat:repeat-y;
+  }
+
+  .placeholder{
+    font-family:'Nunito',sans-serif;
+    color:#9aa9b3;
+    font-style:italic;
+    font-size:0.9rem;
+  }
+
+  .punct{
+    cursor:pointer;
+    padding:0 3px;
+    margin:0 1px;
+    border-radius:4px;
+    transition:background .1s ease;
+  }
+  .punct:hover, .punct:focus-visible{
+    background:rgba(214,85,90,0.18);
+    outline:none;
+  }
+
+  .punct-palette{
+    display:flex;
+    gap:10px;
+    margin-bottom:18px;
+  }
+  .punct-chip{
+    width:44px;
+    height:44px;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    font-family:'Patrick Hand',cursive;
+    font-size:1.4rem;
+    background:#fff;
+    border:2px solid var(--rule);
+    border-radius:10px;
+    color:var(--cover-blue);
+    cursor:grab;
+    user-select:none;
+    touch-action:none;
+  }
+  .punct-chip:active{
+    cursor:grabbing;
+  }
+  .punct-chip.dragging{
+    opacity:0.4;
+  }
+
+  .gap{
+    display:inline-block;
+    min-width:0.4em;
+  }
+  .gap.drop-hover{
+    background:rgba(76,140,107,0.28);
+    border-radius:3px;
+  }
+
+  footer{
+    margin-top:16px;
+    font-size:0.78rem;
+    color:#5b7a8a;
+    text-align:center;
+  }
+
+  @media print{
+    body{background:#fff; padding:0;}
+    .controls, textarea, .label, header p, footer, .no-print{display:none !important;}
+    header{margin-bottom:10px;}
+    .page-wrap{background:#fff; padding:0; border-radius:0;}
+    .page{box-shadow:none; border:none; border-radius:0; min-height:auto;}
+    @page{ size:A4; margin:14mm; }
+  }
+</style>
+</head>
+<body>
+<div class="app">
+
+  <header>
+    <div class="tab"></div>
+    <div>
+      <h1>Dictate to Handwriting</h1>
+      <p>Speak, check the words are right, then see it on primary handwriting lines.</p>
+    </div>
+  </header>
+
+  <div class="controls no-print">
+    <button id="mic-btn"><span class="dot"></span><span id="mic-label">Start dictation</span></button>
+    <button id="undo-btn" disabled>Undo</button>
+    <button id="clear-btn">Clear</button>
+    <div class="size-controls">
+      <label for="size-range">Letter size</label>
+      <input type="range" id="size-range" min="20" max="40" value="28">
+    </div>
+    <span class="status" id="status">Tap "Start dictation" and speak. Say "full stop" or "comma" to add punctuation.</span>
+    <button id="print-btn">Print / Save as PDF</button>
+  </div>
+
+  <p class="label no-print">Your words (edit to fix mistakes)</p>
+  <textarea id="transcript" class="no-print" placeholder="What you say will appear here..."></textarea>
+
+  <p class="label no-print">Drag a punctuation mark onto the page</p>
+  <div class="punct-palette no-print">
+    <div class="punct-chip" draggable="true" data-char=".">.</div>
+    <div class="punct-chip" draggable="true" data-char=",">,</div>
+    <div class="punct-chip" draggable="true" data-char="?">?</div>
+    <div class="punct-chip" draggable="true" data-char="!">!</div>
+  </div>
+
+  <div class="page-wrap">
+    <div class="page" id="page">
+      <div class="margin-line"></div>
+      <div id="writing-output" class="writing">
+        <span class="placeholder">Your handwriting will appear here once you start dictating.</span>
+      </div>
+    </div>
+  </div>
+
+  <footer class="no-print">Dictation uses your browser's built-in speech recognition (works best in Chrome or Edge). Nothing is uploaded or stored anywhere.</footer>
+</div>
+
+<script>
+const micBtn = document.getElementById('mic-btn');
+const micLabel = document.getElementById('mic-label');
+const statusEl = document.getElementById('status');
+const transcriptBox = document.getElementById('transcript');
+const output = document.getElementById('writing-output');
+const clearBtn = document.getElementById('clear-btn');
+const undoBtn = document.getElementById('undo-btn');
+const printBtn = document.getElementById('print-btn');
+const sizeRange = document.getElementById('size-range');
+
+let recognition = null;
+let listening = false;
+let finalTranscript = '';
+let historyStack = []; // snapshots of finalTranscript before each committed change, for Undo
+let preEditSnapshot = null; // captured on textarea focus, for manual-edit undo
+
+function capitalizeFirst(s){ return s.length ? s.charAt(0).toUpperCase() + s.slice(1) : s; }
+function lowercaseFirst(s){ return s.length ? s.charAt(0).toLowerCase() + s.slice(1) : s; }
+
+// General cleanup: capitalise sentence starts and the pronoun "I", tidy spacing.
+// Only collapses spaces/tabs, not newlines, so a deliberate "new line" command survives.
+function cleanupText(text) {
+  text = text.replace(/[ \t]+/g, ' ');
+  text = text.replace(/[ \t]*\n[ \t]*/g, '\n');
+  text = text.trim();
+  text = text.replace(/\s+([.,!?])/g, '$1');
+  text = text.replace(/([.!?]\s+)([a-z])/g, (m, p1, p2) => p1 + p2.toUpperCase());
+  text = text.replace(/\bi\b/g, 'I');
+  text = capitalizeFirst(text);
+  return text;
+}
+
+// The speech engine auto-appends a full stop to the end of every finalised
+// segment whenever the speaker pauses, whether or not a sentence actually
+// ended. Strip that off - real punctuation only comes from spoken commands.
+function stripAutoPunctuation(chunk) {
+  return chunk.replace(/[.,!?]+\s*$/, '').trimEnd();
+}
+
+// Let the student say punctuation instead of relying on the engine to guess it.
+function applyPunctuationCommands(chunk) {
+  return chunk
+    .replace(/\bfull stop\b/gi, '.')
+    .replace(/\bperiod\b/gi, '.')
+    .replace(/\bcomma\b/gi, ',')
+    .replace(/\bquestion mark\b/gi, '?')
+    .replace(/\b(exclamation mark|exclamation point)\b/gi, '!')
+    .replace(/\b(new line|new paragraph)\b/gi, '\n');
+}
+
+// Speech recognition treats every finalised phrase as its own "sentence" and
+// capitalises the first word, even mid-sentence. Only keep that capital if the
+// text so far actually ended with terminal punctuation (or it's the pronoun "I").
+function appendChunk(base, chunk) {
+  chunk = chunk.trim();
+  if (!chunk) return base;
+  chunk = stripAutoPunctuation(chunk);
+  chunk = applyPunctuationCommands(chunk).trim();
+  if (!chunk) return base; // the whole chunk was just the engine's spurious punctuation
+  const baseTrimmed = base.trim();
+  const endsWithTerminal = /[.!?]\s*$/.test(baseTrimmed);
+  const firstWord = chunk.split(/\s+/)[0];
+  if (baseTrimmed.length === 0 || endsWithTerminal || chunk.startsWith('\n')) {
+    chunk = capitalizeFirst(chunk);
+  } else if (!/^i$/i.test(firstWord)) {
+    chunk = lowercaseFirst(chunk);
+  }
+  const joiner = chunk.startsWith('\n') ? '' : ' ';
+  return cleanupText((baseTrimmed + joiner + chunk).trim());
+}
+
+function pushHistory(state) {
+  historyStack.push(state);
+  undoBtn.disabled = false;
+}
+
+function removeCharAt(idx) {
+  const current = transcriptBox.value;
+  if (idx < 0 || idx >= current.length) return;
+  pushHistory(finalTranscript);
+  const newText = cleanupText(current.slice(0, idx) + current.slice(idx + 1));
+  finalTranscript = newText;
+  transcriptBox.value = newText;
+  renderHandwriting(newText);
+}
+
+function insertCharAt(idx, ch) {
+  const current = transcriptBox.value;
+  if (idx < 0 || idx > current.length) return;
+  pushHistory(finalTranscript);
+  const newText = cleanupText(current.slice(0, idx) + ch + current.slice(idx));
+  finalTranscript = newText;
+  transcriptBox.value = newText;
+  renderHandwriting(newText);
+}
+
+const SpeechRecognitionAPI = window.SpeechRecognition || window.webkitSpeechRecognition;
+
+if (!SpeechRecognitionAPI) {
+  statusEl.textContent = 'Speech recognition is not supported in this browser. Try Chrome or Edge.';
+  micBtn.disabled = true;
+} else {
+  recognition = new SpeechRecognitionAPI();
+  recognition.continuous = true;
+  recognition.interimResults = true;
+  recognition.lang = 'en-AU';
+
+  recognition.onresult = (event) => {
+    let interim = '';
+    for (let i = event.resultIndex; i < event.results.length; i++) {
+      const chunk = event.results[i][0].transcript;
+      if (event.results[i].isFinal) {
+        const updated = appendChunk(finalTranscript, chunk);
+        if (updated !== finalTranscript) {
+          pushHistory(finalTranscript);
+          finalTranscript = updated;
+        }
+      } else {
+        interim += chunk;
+      }
+    }
+    transcriptBox.value = (finalTranscript + ' ' + interim).trim();
+    renderHandwriting(transcriptBox.value);
+  };
+
+  recognition.onerror = (event) => {
+    statusEl.textContent = 'Microphone issue: ' + event.error + '. Tap the mic to try again.';
+    stopListening();
+  };
+
+  recognition.onend = () => {
+    if (listening) {
+      // browsers sometimes stop automatically after silence; restart if we're still meant to be listening
+      try { recognition.start(); } catch (err) { /* ignore, user can tap Start again */ }
+    }
+  };
+}
+
+function startListening() {
+  if (!recognition) return;
+  listening = true;
+  try {
+    recognition.start();
+    micBtn.classList.add('listening');
+    micLabel.textContent = 'Stop dictation';
+    statusEl.textContent = 'Listening...';
+  } catch (err) {
+    // Recognition can throw if a previous session hasn't fully closed yet.
+    // Wait a beat and retry once.
+    setTimeout(() => {
+      try {
+        recognition.start();
+        micBtn.classList.add('listening');
+        micLabel.textContent = 'Stop dictation';
+        statusEl.textContent = 'Listening...';
+      } catch (err2) {
+        statusEl.textContent = 'Could not start the microphone. Tap Start again.';
+        listening = false;
+      }
+    }, 250);
+  }
+}
+
+function stopListening() {
+  listening = false;
+  if (recognition) {
+    try { recognition.stop(); } catch (err) { /* already stopped */ }
+  }
+  micBtn.classList.remove('listening');
+  micLabel.textContent = 'Start dictation';
+  statusEl.textContent = 'Paused. Tap to keep going, or edit the text below.';
+}
+
+micBtn.addEventListener('click', () => {
+  if (listening) {
+    stopListening();
+  } else {
+    startListening();
+  }
+});
+
+clearBtn.addEventListener('click', () => {
+  if (finalTranscript.trim().length > 0) pushHistory(finalTranscript);
+  finalTranscript = '';
+  transcriptBox.value = '';
+  renderHandwriting('');
+});
+
+undoBtn.addEventListener('click', () => {
+  if (historyStack.length === 0) return;
+  finalTranscript = historyStack.pop();
+  transcriptBox.value = finalTranscript;
+  renderHandwriting(finalTranscript);
+  undoBtn.disabled = historyStack.length === 0;
+});
+
+transcriptBox.addEventListener('focus', () => {
+  preEditSnapshot = finalTranscript;
+});
+
+transcriptBox.addEventListener('blur', () => {
+  if (preEditSnapshot !== null && preEditSnapshot !== transcriptBox.value) {
+    pushHistory(preEditSnapshot);
+  }
+  preEditSnapshot = null;
+});
+
+transcriptBox.addEventListener('input', () => {
+  finalTranscript = transcriptBox.value;
+  renderHandwriting(transcriptBox.value);
+});
+
+printBtn.addEventListener('click', () => window.print());
+
+sizeRange.addEventListener('input', () => renderHandwriting(transcriptBox.value));
+
+function renderHandwriting(text) {
+  output.innerHTML = '';
+  const trimmed = text.trim();
+  if (!trimmed) {
+    output.innerHTML = '<span class="placeholder">Your handwriting will appear here once you start dictating.</span>';
+    return;
+  }
+
+  const fontSize = parseInt(sizeRange.value, 10);
+  const bandHeight = Math.round(fontSize * 1.7); // total height of one 4-line band
+  const topGap = Math.round(bandHeight * 0.08);
+  const midOffset = Math.round(bandHeight * 0.56);   // dotted midline (x-height)
+  const baseOffset = Math.round(bandHeight * 0.86);  // solid baseline
+
+  // Build one tile of the four-line ruling as an SVG (this avoids the CSS
+  // gradient trick that was stretching the dashed line down the whole page).
+  const svg = `
+    <svg xmlns='http://www.w3.org/2000/svg' width='400' height='${bandHeight}'>
+      <line x1='0' y1='${topGap}' x2='400' y2='${topGap}' stroke='#A9C6D6' stroke-width='1'/>
+      <line x1='0' y1='${midOffset}' x2='400' y2='${midOffset}' stroke='#90aebb' stroke-width='1.5' stroke-dasharray='6,5'/>
+      <line x1='0' y1='${baseOffset}' x2='400' y2='${baseOffset}' stroke='#5b7a8a' stroke-width='2'/>
+    </svg>
+  `.trim();
+  const dataUri = 'data:image/svg+xml;utf8,' + encodeURIComponent(svg);
+
+  const line = document.createElement('div');
+  line.className = 'ruled';
+  line.style.backgroundImage = `url("${dataUri}")`;
+  line.style.backgroundRepeat = 'repeat-y';
+  line.style.backgroundSize = `100% ${bandHeight}px`;
+  line.style.fontSize = fontSize + 'px';
+  line.style.lineHeight = bandHeight + 'px';
+  line.style.paddingTop = '2px';
+  line.style.paddingBottom = '4px';
+  line.appendChild(buildTappableContent(trimmed));
+
+  output.appendChild(line);
+}
+
+// Turns the plain text into a mix of text nodes, tappable punctuation spans,
+// and drop-target "gaps" between words, so a student can either tap a stray
+// mark to remove it, or drag a punctuation chip onto a gap to insert one.
+function buildTappableContent(text) {
+  const frag = document.createDocumentFragment();
+  let buffer = '';
+  const flush = () => {
+    if (buffer) {
+      frag.appendChild(document.createTextNode(buffer));
+      buffer = '';
+    }
+  };
+  const makeGap = (idx) => {
+    const gap = document.createElement('span');
+    gap.className = 'gap';
+    gap.textContent = ' ';
+    gap.dataset.idx = idx;
+    gap.addEventListener('dragover', (e) => { e.preventDefault(); gap.classList.add('drop-hover'); });
+    gap.addEventListener('dragleave', () => gap.classList.remove('drop-hover'));
+    gap.addEventListener('drop', (e) => {
+      e.preventDefault();
+      gap.classList.remove('drop-hover');
+      const ch = e.dataTransfer.getData('text/plain');
+      if ('.,!?'.includes(ch)) insertCharAt(parseInt(gap.dataset.idx, 10), ch);
+    });
+    return gap;
+  };
+
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (ch === '\n') {
+      flush();
+      frag.appendChild(document.createElement('br'));
+    } else if (ch === ' ') {
+      flush();
+      frag.appendChild(makeGap(i));
+    } else if ('.,!?'.includes(ch)) {
+      flush();
+      const span = document.createElement('span');
+      span.className = 'punct';
+      span.textContent = ch;
+      span.title = 'Tap to remove';
+      span.tabIndex = 0;
+      span.setAttribute('role', 'button');
+      span.setAttribute('aria-label', 'Remove this punctuation mark');
+      const idx = i;
+      span.addEventListener('click', () => removeCharAt(idx));
+      span.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); removeCharAt(idx); }
+      });
+      frag.appendChild(span);
+    } else {
+      buffer += ch;
+    }
+  }
+  flush();
+  frag.appendChild(makeGap(text.length)); // lets a student drop a mark right at the very end
+  return frag;
+}
+
+document.querySelectorAll('.punct-chip').forEach((chip) => {
+  chip.addEventListener('dragstart', (e) => {
+    e.dataTransfer.setData('text/plain', chip.dataset.char);
+    e.dataTransfer.effectAllowed = 'copy';
+    chip.classList.add('dragging');
+  });
+  chip.addEventListener('dragend', () => chip.classList.remove('dragging'));
+});
+</script>
+</body>
+</html>
