@@ -294,6 +294,11 @@
   <p class="label no-print">Your words (edit to fix mistakes)</p>
   <textarea id="transcript" class="no-print" placeholder="What you say will appear here..."></textarea>
 
+  <details class="no-print" style="margin-bottom:18px;">
+    <summary style="cursor:pointer; font-size:0.8rem; color:#5b7a8a; font-weight:700;">Debug log (for troubleshooting)</summary>
+    <div id="debug-log" style="background:#0d1b24; color:#8fd4a8; font-family:monospace; font-size:0.72rem; padding:10px 12px; border-radius:8px; margin-top:8px; max-height:220px; overflow-y:auto; white-space:pre-wrap;"></div>
+  </details>
+
   <p class="label no-print">Drag a punctuation mark onto the page</p>
   <div class="punct-palette no-print">
     <div class="punct-chip" draggable="true" data-char=".">.</div>
@@ -411,7 +416,22 @@ function insertCharAt(idx, ch) {
   renderHandwriting(newText);
 }
 
+const debugLogEl = document.getElementById('debug-log');
+function dlog(msg) {
+  const t = new Date().toISOString().split('T')[1].replace('Z', '');
+  if (debugLogEl) {
+    debugLogEl.textContent += `[${t}] ${msg}\n`;
+    debugLogEl.scrollTop = debugLogEl.scrollHeight;
+  }
+  console.log('[dictation]', msg);
+}
+
+dlog(`Page loaded. UA: ${navigator.userAgent}`);
+dlog(`Standalone (Home Screen) mode: ${window.navigator.standalone === true}`);
+dlog(`Secure context (https): ${window.isSecureContext}`);
+
 const SpeechRecognitionAPI = window.SpeechRecognition || window.webkitSpeechRecognition;
+dlog(`SpeechRecognition API present: ${!!SpeechRecognitionAPI}`);
 
 // iOS/iPadOS Safari has a long-documented bug where speech recognition can
 // silently hang after the first phrase or two - mic stays "on", but
@@ -443,16 +463,22 @@ function markActivity() { lastActivityAt = Date.now(); }
 
 function forceRestart() {
   if (restarting || !listening || !recognition) return;
+  dlog('Watchdog: no activity for too long, forcing restart (abort + delayed start)');
   restarting = true;
-  try { recognition.abort(); } catch (err) { /* ignore */ }
+  try { recognition.abort(); } catch (err) { dlog('abort() threw: ' + err); }
   setTimeout(() => {
     if (!listening) { restarting = false; return; }
     try {
       recognition.start();
       markActivity();
+      dlog('Watchdog restart: start() succeeded');
     } catch (err) {
+      dlog('Watchdog restart: start() threw: ' + err.message);
       setTimeout(() => {
-        if (listening) { try { recognition.start(); markActivity(); } catch (e) { /* watchdog will try again */ } }
+        if (listening) {
+          try { recognition.start(); markActivity(); dlog('Watchdog retry: start() succeeded'); }
+          catch (e) { dlog('Watchdog retry: start() threw again: ' + e.message); }
+        }
       }, RESTART_DELAY_MS);
     }
     restarting = false;
@@ -481,14 +507,17 @@ if (!SpeechRecognitionAPI) {
   recognition.interimResults = !useBurstMode; // Safari's interim results are also unreliable in burst mode
   recognition.lang = 'en-AU';
 
-  recognition.onstart = () => { markActivity(); };
+  recognition.onstart = () => { markActivity(); dlog('onstart fired - recognition actually started'); };
 
   recognition.onresult = (event) => {
     markActivity();
+    dlog(`onresult fired - resultIndex=${event.resultIndex}, results.length=${event.results.length}`);
     let interim = '';
     for (let i = event.resultIndex; i < event.results.length; i++) {
       const chunk = event.results[i][0].transcript;
-      if (event.results[i].isFinal) {
+      const isFinal = event.results[i].isFinal;
+      dlog(`  [${i}] isFinal=${isFinal} text="${chunk}"`);
+      if (isFinal) {
         const updated = appendChunk(finalTranscript, chunk);
         if (updated !== finalTranscript) {
           pushHistory(finalTranscript);
@@ -503,6 +532,7 @@ if (!SpeechRecognitionAPI) {
   };
 
   recognition.onerror = (event) => {
+    dlog('onerror fired: ' + event.error);
     // These two are benign and expected during normal pauses/restarts -
     // let the restart logic (onend, or the watchdog if onend never fires)
     // handle it rather than treating it as a real failure.
@@ -512,12 +542,14 @@ if (!SpeechRecognitionAPI) {
   };
 
   recognition.onend = () => {
+    dlog('onend fired' + (restarting ? ' (already restarting, ignoring)' : ''));
     if (!listening || restarting) return;
     restarting = true;
     setTimeout(() => {
       restarting = false;
       if (!listening) return;
-      try { recognition.start(); markActivity(); } catch (err) { /* the watchdog will catch a silent failure */ }
+      try { recognition.start(); markActivity(); dlog('onend-triggered restart: start() succeeded'); }
+      catch (err) { dlog('onend-triggered restart: start() threw: ' + err.message); }
     }, RESTART_DELAY_MS);
   };
 }
@@ -528,19 +560,23 @@ function startListening() {
   startWatchdog();
   try {
     recognition.start();
+    dlog('startListening: start() call succeeded (does not guarantee onstart will fire)');
     micBtn.classList.add('listening');
     micLabel.textContent = 'Stop dictation';
     statusEl.textContent = 'Listening...';
   } catch (err) {
+    dlog('startListening: start() threw immediately: ' + err.message);
     // Recognition can throw if a previous session hasn't fully closed yet.
     // Wait a beat and retry once.
     setTimeout(() => {
       try {
         recognition.start();
+        dlog('startListening retry: start() succeeded');
         micBtn.classList.add('listening');
         micLabel.textContent = 'Stop dictation';
         statusEl.textContent = 'Listening...';
       } catch (err2) {
+        dlog('startListening retry: start() threw again: ' + err2.message);
         statusEl.textContent = 'Could not start the microphone. Tap Start again.';
         listening = false;
         stopWatchdog();
