@@ -398,7 +398,6 @@ function appendChunk(base, chunk) {
 
 function pushHistory(state) {
   historyStack.push(state);
-  undoBtn.disabled = false;
 }
 
 function removeCharAt(idx) {
@@ -630,11 +629,7 @@ function createRecognition() {
   r.onend = () => {
     dlog('onend fired' + (restarting ? ' (already restarting, ignoring)' : ''));
     commitPendingInterim();
-    if (!listening) {
-      if (deleteWordAfterStop) { deleteWordAfterStop = false; removeLastWord(); }
-      else ensureTerminalFullStop();
-      return;
-    }
+    if (!listening) { ensureTerminalFullStop(); return; }
     if (restarting) return;
     scheduleRestart('onend');
   };
@@ -702,6 +697,7 @@ function startListening() {
   lastInterimText = '';
   pauseMarks = [];
   startWatchdog();
+  undoBtn.disabled = true;
   micBtn.classList.add('listening');
   micLabel.textContent = 'Stop dictation';
   statusEl.textContent = 'Starting...';
@@ -721,6 +717,7 @@ function startListening() {
         stopWatchdog();
         micBtn.classList.remove('listening');
         micLabel.textContent = 'Start dictation';
+        undoBtn.disabled = false;
       }
     }, RESTART_DELAY_MS);
   }
@@ -736,6 +733,7 @@ function stopListening() {
   micBtn.classList.remove('listening');
   micLabel.textContent = 'Start dictation';
   statusEl.textContent = 'Paused. Tap to keep going, or edit the text below.';
+  undoBtn.disabled = false;
 }
 
 micBtn.addEventListener('click', () => {
@@ -757,10 +755,9 @@ clearBtn.addEventListener('click', () => {
 });
 
 // Deletes one word at a time, so a student can back up to a mis-heard word
-// without losing the sentence. If dictation is running, it pauses first,
-// because the live text would otherwise be re-sent by the recognizer and
-// the deleted word would just reappear.
-let deleteWordAfterStop = false;
+// without losing the sentence. Only available while the mic is off: live
+// text is re-sent by the recognizer as it grows, so a word deleted
+// mid-dictation would just reappear.
 
 function removeLastWord() {
   const t = finalTranscript.trim();
@@ -772,16 +769,12 @@ function removeLastWord() {
   finalTranscript = newText;
   transcriptBox.value = newText;
   renderHandwriting(newText);
-  statusEl.textContent = removed ? `Deleted "${removed}". Tap Start to keep going.` : 'Nothing to delete.';
+  statusEl.textContent = removed ? `Deleted "${removed}".` : 'Nothing to delete.';
   dlog('Deleted last word: "' + removed + '"');
 }
 
 undoBtn.addEventListener('click', () => {
-  if (listening) {
-    deleteWordAfterStop = true;
-    stopListening();
-    return;
-  }
+  if (listening) return;
   removeLastWord();
 });
 
