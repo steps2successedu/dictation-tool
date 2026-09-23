@@ -413,16 +413,57 @@ function insertCharAt(idx, ch) {
 
 const SpeechRecognitionAPI = window.SpeechRecognition || window.webkitSpeechRecognition;
 
-// iOS/iPadOS Safari has a long-documented bug where continuous-mode speech
-// recognition silently stops returning results after the first pause -
-// no error, mic stays "on", but nothing more is ever transcribed. The
-// workaround is to never use continuous mode there: run short bursts and
-// restart automatically after each one, so it behaves like continuous
-// listening from the student's point of view without hitting the bug.
+// iOS/iPadOS Safari has a long-documented bug where speech recognition can
+// silently hang after the first phrase or two - mic stays "on", but
+// onresult, onerror AND onend all stop firing entirely. Because even onend
+// can't be relied on to fire, a plain "restart on end" fix (like the
+// previous version of this file) can still get stuck. The fix that actually
+// holds up is a watchdog: track when we last heard anything, and if too
+// long passes with the mic supposedly listening, forcibly abort and
+// restart regardless of whether any event told us to.
 const ua = navigator.userAgent;
 const isIOS = /iPad|iPhone|iPod/.test(ua) || (ua.includes('Macintosh') && navigator.maxTouchPoints > 1);
 const isSafari = /Safari/.test(ua) && !/Chrome|CriOS|EdgiOS|FxiOS/.test(ua);
 const useBurstMode = isIOS && isSafari;
+
+let lastActivityAt = 0;
+let restarting = false;
+let watchdogInterval = null;
+const WATCHDOG_TICK_MS = 1500;
+const HANG_THRESHOLD_MS = 4000;
+
+function markActivity() { lastActivityAt = Date.now(); }
+
+function forceRestart() {
+  if (restarting || !listening || !recognition) return;
+  restarting = true;
+  try { recognition.abort(); } catch (err) { /* ignore */ }
+  setTimeout(() => {
+    if (!listening) { restarting = false; return; }
+    try {
+      recognition.start();
+      markActivity();
+    } catch (err) {
+      setTimeout(() => {
+        if (listening) { try { recognition.start(); markActivity(); } catch (e) { /* watchdog will try again */ } }
+      }, 300);
+    }
+    restarting = false;
+  }, 250);
+}
+
+function startWatchdog() {
+  if (watchdogInterval) return;
+  markActivity();
+  watchdogInterval = setInterval(() => {
+    if (!listening) return;
+    if (Date.now() - lastActivityAt > HANG_THRESHOLD_MS) forceRestart();
+  }, WATCHDOG_TICK_MS);
+}
+
+function stopWatchdog() {
+  if (watchdogInterval) { clearInterval(watchdogInterval); watchdogInterval = null; }
+}
 
 if (!SpeechRecognitionAPI) {
   statusEl.textContent = 'Speech recognition is not supported in this browser. Try Chrome or Edge.';
@@ -433,7 +474,10 @@ if (!SpeechRecognitionAPI) {
   recognition.interimResults = !useBurstMode; // Safari's interim results are also unreliable in burst mode
   recognition.lang = 'en-AU';
 
+  recognition.onstart = () => { markActivity(); };
+
   recognition.onresult = (event) => {
+    markActivity();
     let interim = '';
     for (let i = event.resultIndex; i < event.results.length; i++) {
       const chunk = event.results[i][0].transcript;
@@ -452,26 +496,24 @@ if (!SpeechRecognitionAPI) {
   };
 
   recognition.onerror = (event) => {
-    // "no-speech" fires constantly and harmlessly in burst mode (it just
-    // means that particular burst ended in silence) - don't treat it as a
-    // real error or it'll interrupt the restart cycle.
-    if (useBurstMode && event.error === 'no-speech') return;
+    // These two are benign and expected during normal pauses/restarts -
+    // let the restart logic (onend, or the watchdog if onend never fires)
+    // handle it rather than treating it as a real failure.
+    if (event.error === 'no-speech' || event.error === 'aborted') return;
     statusEl.textContent = 'Microphone issue: ' + event.error + '. Tap the mic to try again.';
     stopListening();
   };
 
   recognition.onend = () => {
-    if (listening) {
-      // Restart immediately to chain the next burst (or, on Chrome/Edge,
-      // to recover from the occasional auto-stop after silence).
-      try { recognition.start(); } catch (err) { /* ignore, user can tap Start again */ }
-    }
+    if (!listening || restarting) return;
+    try { recognition.start(); markActivity(); } catch (err) { /* the watchdog will catch a silent failure */ }
   };
 }
 
 function startListening() {
   if (!recognition) return;
   listening = true;
+  startWatchdog();
   try {
     recognition.start();
     micBtn.classList.add('listening');
@@ -489,6 +531,7 @@ function startListening() {
       } catch (err2) {
         statusEl.textContent = 'Could not start the microphone. Tap Start again.';
         listening = false;
+        stopWatchdog();
       }
     }, 250);
   }
@@ -496,6 +539,7 @@ function startListening() {
 
 function stopListening() {
   listening = false;
+  stopWatchdog();
   if (recognition) {
     try { recognition.stop(); } catch (err) { /* already stopped */ }
   }
