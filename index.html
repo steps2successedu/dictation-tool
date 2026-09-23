@@ -281,7 +281,7 @@
 
   <div class="controls no-print">
     <button id="mic-btn"><span class="dot"></span><span id="mic-label">Start dictation</span></button>
-    <button id="undo-btn" disabled>Undo</button>
+    <button id="undo-btn">Delete last word</button>
     <button id="clear-btn">Clear</button>
     <div class="size-controls">
       <label for="size-range">Letter size</label>
@@ -630,7 +630,11 @@ function createRecognition() {
   r.onend = () => {
     dlog('onend fired' + (restarting ? ' (already restarting, ignoring)' : ''));
     commitPendingInterim();
-    if (!listening) { ensureTerminalFullStop(); return; }
+    if (!listening) {
+      if (deleteWordAfterStop) { deleteWordAfterStop = false; removeLastWord(); }
+      else ensureTerminalFullStop();
+      return;
+    }
     if (restarting) return;
     scheduleRestart('onend');
   };
@@ -752,12 +756,33 @@ clearBtn.addEventListener('click', () => {
   renderHandwriting('');
 });
 
+// Deletes one word at a time, so a student can back up to a mis-heard word
+// without losing the sentence. If dictation is running, it pauses first,
+// because the live text would otherwise be re-sent by the recognizer and
+// the deleted word would just reappear.
+let deleteWordAfterStop = false;
+
+function removeLastWord() {
+  const t = finalTranscript.trim();
+  if (!t) return;
+  const match = t.match(/\S+$/);
+  const removed = match ? match[0] : '';
+  const newText = t.replace(/\s*\S+$/, '').trim();
+  pushHistory(finalTranscript);
+  finalTranscript = newText;
+  transcriptBox.value = newText;
+  renderHandwriting(newText);
+  statusEl.textContent = removed ? `Deleted "${removed}". Tap Start to keep going.` : 'Nothing to delete.';
+  dlog('Deleted last word: "' + removed + '"');
+}
+
 undoBtn.addEventListener('click', () => {
-  if (historyStack.length === 0) return;
-  finalTranscript = historyStack.pop();
-  transcriptBox.value = finalTranscript;
-  renderHandwriting(finalTranscript);
-  undoBtn.disabled = historyStack.length === 0;
+  if (listening) {
+    deleteWordAfterStop = true;
+    stopListening();
+    return;
+  }
+  removeLastWord();
 });
 
 transcriptBox.addEventListener('focus', () => {
