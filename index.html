@@ -429,8 +429,15 @@ const useBurstMode = isIOS && isSafari;
 let lastActivityAt = 0;
 let restarting = false;
 let watchdogInterval = null;
-const WATCHDOG_TICK_MS = 1500;
-const HANG_THRESHOLD_MS = 4000;
+const WATCHDOG_TICK_MS = 1000;
+const HANG_THRESHOLD_MS = 3000;
+// Per a developer's documented findings on the WebAudio/web-speech-api
+// tracker: on iOS Safari, restarting recognition too soon after a stop
+// silently fails to actually resume (no thrown error, it just never
+// captures again) - the audio session needs roughly 3.5-5s to release
+// first. This delay looks slow, but a faster one has been reported not
+// to work at all, which is worse.
+const RESTART_DELAY_MS = 4000;
 
 function markActivity() { lastActivityAt = Date.now(); }
 
@@ -446,10 +453,10 @@ function forceRestart() {
     } catch (err) {
       setTimeout(() => {
         if (listening) { try { recognition.start(); markActivity(); } catch (e) { /* watchdog will try again */ } }
-      }, 300);
+      }, RESTART_DELAY_MS);
     }
     restarting = false;
-  }, 250);
+  }, RESTART_DELAY_MS);
 }
 
 function startWatchdog() {
@@ -506,7 +513,12 @@ if (!SpeechRecognitionAPI) {
 
   recognition.onend = () => {
     if (!listening || restarting) return;
-    try { recognition.start(); markActivity(); } catch (err) { /* the watchdog will catch a silent failure */ }
+    restarting = true;
+    setTimeout(() => {
+      restarting = false;
+      if (!listening) return;
+      try { recognition.start(); markActivity(); } catch (err) { /* the watchdog will catch a silent failure */ }
+    }, RESTART_DELAY_MS);
   };
 }
 
