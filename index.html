@@ -413,13 +413,24 @@ function insertCharAt(idx, ch) {
 
 const SpeechRecognitionAPI = window.SpeechRecognition || window.webkitSpeechRecognition;
 
+// iOS/iPadOS Safari has a long-documented bug where continuous-mode speech
+// recognition silently stops returning results after the first pause -
+// no error, mic stays "on", but nothing more is ever transcribed. The
+// workaround is to never use continuous mode there: run short bursts and
+// restart automatically after each one, so it behaves like continuous
+// listening from the student's point of view without hitting the bug.
+const ua = navigator.userAgent;
+const isIOS = /iPad|iPhone|iPod/.test(ua) || (ua.includes('Macintosh') && navigator.maxTouchPoints > 1);
+const isSafari = /Safari/.test(ua) && !/Chrome|CriOS|EdgiOS|FxiOS/.test(ua);
+const useBurstMode = isIOS && isSafari;
+
 if (!SpeechRecognitionAPI) {
   statusEl.textContent = 'Speech recognition is not supported in this browser. Try Chrome or Edge.';
   micBtn.disabled = true;
 } else {
   recognition = new SpeechRecognitionAPI();
-  recognition.continuous = true;
-  recognition.interimResults = true;
+  recognition.continuous = !useBurstMode;
+  recognition.interimResults = !useBurstMode; // Safari's interim results are also unreliable in burst mode
   recognition.lang = 'en-AU';
 
   recognition.onresult = (event) => {
@@ -441,13 +452,18 @@ if (!SpeechRecognitionAPI) {
   };
 
   recognition.onerror = (event) => {
+    // "no-speech" fires constantly and harmlessly in burst mode (it just
+    // means that particular burst ended in silence) - don't treat it as a
+    // real error or it'll interrupt the restart cycle.
+    if (useBurstMode && event.error === 'no-speech') return;
     statusEl.textContent = 'Microphone issue: ' + event.error + '. Tap the mic to try again.';
     stopListening();
   };
 
   recognition.onend = () => {
     if (listening) {
-      // browsers sometimes stop automatically after silence; restart if we're still meant to be listening
+      // Restart immediately to chain the next burst (or, on Chrome/Edge,
+      // to recover from the occasional auto-stop after silence).
       try { recognition.start(); } catch (err) { /* ignore, user can tap Start again */ }
     }
   };
