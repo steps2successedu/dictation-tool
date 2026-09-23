@@ -445,7 +445,10 @@ dlog(`SpeechRecognition API present: ${!!SpeechRecognitionAPI}`);
 const ua = navigator.userAgent;
 const isIOS = /iPad|iPhone|iPod/.test(ua) || (ua.includes('Macintosh') && navigator.maxTouchPoints > 1);
 const isSafari = /Safari/.test(ua) && !/Chrome|CriOS|EdgiOS|FxiOS/.test(ua);
-const useBurstMode = isIOS && isSafari;
+// ?mode=continuous on the URL forces the original continuous mode even on
+// iPad, for side-by-side comparison against burst mode.
+const forcedMode = new URLSearchParams(location.search).get('mode');
+const useBurstMode = isIOS && isSafari && forcedMode !== 'continuous';
 
 let lastActivityAt = 0;
 let restarting = false;
