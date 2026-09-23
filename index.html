@@ -445,10 +445,12 @@ dlog(`SpeechRecognition API present: ${!!SpeechRecognitionAPI}`);
 const ua = navigator.userAgent;
 const isIOS = /iPad|iPhone|iPod/.test(ua) || (ua.includes('Macintosh') && navigator.maxTouchPoints > 1);
 const isSafari = /Safari/.test(ua) && !/Chrome|CriOS|EdgiOS|FxiOS/.test(ua);
-// ?mode=continuous on the URL forces the original continuous mode even on
-// iPad, for side-by-side comparison against burst mode.
+// Continuous mode is the default everywhere, including iPad Safari - tested
+// on real iPads (iPadOS 26.6 and 27.0) it streams live text correctly.
+// Burst mode (single-shot recognition with restarts) is kept as a fallback
+// via ?mode=burst; it works but its live text lags by ~3s on Safari.
 const forcedMode = new URLSearchParams(location.search).get('mode');
-const useBurstMode = isIOS && isSafari && forcedMode !== 'continuous';
+const useBurstMode = isIOS && isSafari && forcedMode === 'burst';
 
 let lastActivityAt = 0;
 let restarting = false;
@@ -470,6 +472,24 @@ const HANG_THRESHOLD_MS = 15000;
 const RESTART_DELAY_MS = 4000;
 
 function markActivity() { lastActivityAt = Date.now(); }
+
+// Text Safari has streamed but not yet marked final. Safari's continuous
+// mode is known to sometimes never finalise, so this must be committed
+// ourselves when a session ends, or it would be lost on Stop/restart.
+let pendingInterim = '';
+
+function commitPendingInterim() {
+  if (!pendingInterim.trim()) return;
+  const updated = appendChunk(finalTranscript, pendingInterim);
+  dlog('Committing unfinalised text: "' + pendingInterim + '"');
+  pendingInterim = '';
+  if (updated !== finalTranscript) {
+    pushHistory(finalTranscript);
+    finalTranscript = updated;
+  }
+  transcriptBox.value = finalTranscript;
+  renderHandwriting(finalTranscript);
+}
 
 // Builds a recognition object with all handlers attached. In burst mode a
 // fresh object is created for every restart, because reusing one after a
@@ -513,7 +533,10 @@ function createRecognition() {
         interim += chunk;
       }
     }
-    transcriptBox.value = (finalTranscript + ' ' + interim).trim();
+    pendingInterim = interim;
+    // Show spoken punctuation ("full stop", "comma") as symbols in the live
+    // text too, not only once a result is final.
+    transcriptBox.value = (finalTranscript + ' ' + applyPunctuationCommands(interim)).trim();
     renderHandwriting(transcriptBox.value);
   };
 
@@ -528,6 +551,7 @@ function createRecognition() {
 
   r.onend = () => {
     dlog('onend fired' + (restarting ? ' (already restarting, ignoring)' : ''));
+    commitPendingInterim();
     if (!listening || restarting) return;
     scheduleRestart('onend');
   };
@@ -561,6 +585,7 @@ function scheduleRestart(reason) {
 function forceRestart() {
   if (restarting || !listening || !recognition) return;
   dlog('Watchdog: no activity for ' + HANG_THRESHOLD_MS + 'ms, forcing restart');
+  commitPendingInterim();
   try { recognition.abort(); } catch (err) { dlog('abort() threw: ' + err); }
   scheduleRestart('watchdog');
 }
@@ -638,6 +663,7 @@ micBtn.addEventListener('click', () => {
 clearBtn.addEventListener('click', () => {
   if (finalTranscript.trim().length > 0) pushHistory(finalTranscript);
   finalTranscript = '';
+  pendingInterim = '';
   transcriptBox.value = '';
   renderHandwriting('');
 });
