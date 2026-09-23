@@ -418,7 +418,8 @@ function insertCharAt(idx, ch) {
 
 const debugLogEl = document.getElementById('debug-log');
 function dlog(msg) {
-  const t = new Date().toISOString().split('T')[1].replace('Z', '');
+  const d = new Date();
+  const t = d.toLocaleTimeString('en-AU', { hour12: false }) + '.' + String(d.getMilliseconds()).padStart(3, '0');
   if (debugLogEl) {
     debugLogEl.textContent += `[${t}] ${msg}\n`;
     debugLogEl.scrollTop = debugLogEl.scrollHeight;
@@ -473,7 +474,10 @@ function markActivity() { lastActivityAt = Date.now(); }
 function createRecognition() {
   const r = new SpeechRecognitionAPI();
   r.continuous = !useBurstMode;
-  r.interimResults = !useBurstMode;
+  // Interim (word-by-word) results are on everywhere. The reports of them
+  // being unreliable on iPad Safari related to continuous mode, which burst
+  // mode avoids; Apple's on-device recognizer does return partial results.
+  r.interimResults = true;
   r.lang = 'en-AU';
 
   r.onstart = () => {
