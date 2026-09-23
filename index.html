@@ -450,66 +450,45 @@ let lastActivityAt = 0;
 let restarting = false;
 let watchdogInterval = null;
 const WATCHDOG_TICK_MS = 1000;
-const HANG_THRESHOLD_MS = 3000;
+// In burst mode (iPad Safari) interim results are off, so the page hears
+// NOTHING from Safari until a whole phrase is finished and the final result
+// arrives. A short "no activity" threshold therefore aborts recognition
+// mid-sentence - which is exactly the bug the previous version of this
+// file had (mic start/stop sounds going off on their own, and only very
+// short words ever getting through). So the watchdog is a last-resort
+// safety net only, and it also treats Safari's sound/speech-detected
+// events as proof the engine is alive.
+const HANG_THRESHOLD_MS = 15000;
 // Per a developer's documented findings on the WebAudio/web-speech-api
 // tracker: on iOS Safari, restarting recognition too soon after a stop
-// silently fails to actually resume (no thrown error, it just never
-// captures again) - the audio session needs roughly 3.5-5s to release
-// first. This delay looks slow, but a faster one has been reported not
-// to work at all, which is worse.
+// silently fails to actually resume - the audio session needs roughly
+// 3.5-5s to release first.
 const RESTART_DELAY_MS = 4000;
 
 function markActivity() { lastActivityAt = Date.now(); }
 
-function forceRestart() {
-  if (restarting || !listening || !recognition) return;
-  dlog('Watchdog: no activity for too long, forcing restart (abort + delayed start)');
-  restarting = true;
-  try { recognition.abort(); } catch (err) { dlog('abort() threw: ' + err); }
-  setTimeout(() => {
-    if (!listening) { restarting = false; return; }
-    try {
-      recognition.start();
-      markActivity();
-      dlog('Watchdog restart: start() succeeded');
-    } catch (err) {
-      dlog('Watchdog restart: start() threw: ' + err.message);
-      setTimeout(() => {
-        if (listening) {
-          try { recognition.start(); markActivity(); dlog('Watchdog retry: start() succeeded'); }
-          catch (e) { dlog('Watchdog retry: start() threw again: ' + e.message); }
-        }
-      }, RESTART_DELAY_MS);
-    }
-    restarting = false;
-  }, RESTART_DELAY_MS);
-}
+// Builds a recognition object with all handlers attached. In burst mode a
+// fresh object is created for every restart, because reusing one after a
+// stop on iOS Safari is a documented source of silent hangs.
+function createRecognition() {
+  const r = new SpeechRecognitionAPI();
+  r.continuous = !useBurstMode;
+  r.interimResults = !useBurstMode;
+  r.lang = 'en-AU';
 
-function startWatchdog() {
-  if (watchdogInterval) return;
-  markActivity();
-  watchdogInterval = setInterval(() => {
-    if (!listening) return;
-    if (Date.now() - lastActivityAt > HANG_THRESHOLD_MS) forceRestart();
-  }, WATCHDOG_TICK_MS);
-}
+  r.onstart = () => {
+    markActivity();
+    dlog('onstart fired - recognition actually started');
+    if (listening) statusEl.textContent = 'Listening...';
+  };
+  r.onaudiostart = () => { markActivity(); dlog('onaudiostart'); };
+  r.onsoundstart = () => { markActivity(); dlog('onsoundstart (sound detected)'); };
+  r.onspeechstart = () => { markActivity(); dlog('onspeechstart (speech detected)'); };
+  r.onspeechend = () => { markActivity(); dlog('onspeechend'); };
+  r.onsoundend = () => { markActivity(); dlog('onsoundend'); };
+  r.onaudioend = () => { markActivity(); dlog('onaudioend'); };
 
-function stopWatchdog() {
-  if (watchdogInterval) { clearInterval(watchdogInterval); watchdogInterval = null; }
-}
-
-if (!SpeechRecognitionAPI) {
-  statusEl.textContent = 'Speech recognition is not supported in this browser. Try Chrome or Edge.';
-  micBtn.disabled = true;
-} else {
-  recognition = new SpeechRecognitionAPI();
-  recognition.continuous = !useBurstMode;
-  recognition.interimResults = !useBurstMode; // Safari's interim results are also unreliable in burst mode
-  recognition.lang = 'en-AU';
-
-  recognition.onstart = () => { markActivity(); dlog('onstart fired - recognition actually started'); };
-
-  recognition.onresult = (event) => {
+  r.onresult = (event) => {
     markActivity();
     dlog(`onresult fired - resultIndex=${event.resultIndex}, results.length=${event.results.length}`);
     let interim = '';
@@ -531,62 +510,107 @@ if (!SpeechRecognitionAPI) {
     renderHandwriting(transcriptBox.value);
   };
 
-  recognition.onerror = (event) => {
+  r.onerror = (event) => {
     dlog('onerror fired: ' + event.error);
-    // These two are benign and expected during normal pauses/restarts -
-    // let the restart logic (onend, or the watchdog if onend never fires)
-    // handle it rather than treating it as a real failure.
+    // Benign and expected during normal pauses/restarts - the restart
+    // logic handles these. Anything else is a real failure.
     if (event.error === 'no-speech' || event.error === 'aborted') return;
     statusEl.textContent = 'Microphone issue: ' + event.error + '. Tap the mic to try again.';
     stopListening();
   };
 
-  recognition.onend = () => {
+  r.onend = () => {
     dlog('onend fired' + (restarting ? ' (already restarting, ignoring)' : ''));
     if (!listening || restarting) return;
-    restarting = true;
-    setTimeout(() => {
-      restarting = false;
-      if (!listening) return;
-      try { recognition.start(); markActivity(); dlog('onend-triggered restart: start() succeeded'); }
-      catch (err) { dlog('onend-triggered restart: start() threw: ' + err.message); }
-    }, RESTART_DELAY_MS);
+    scheduleRestart('onend');
   };
+
+  return r;
+}
+
+// Start (or restart) recognition. In burst mode the old object is thrown
+// away and a fresh one is built first.
+function launchRecognition(reason) {
+  if (useBurstMode) {
+    if (recognition) { try { recognition.abort(); } catch (err) { /* ignore */ } }
+    recognition = createRecognition();
+  }
+  recognition.start();
+  markActivity();
+  dlog(`${reason}: start() call succeeded`);
+}
+
+function scheduleRestart(reason) {
+  restarting = true;
+  if (useBurstMode) statusEl.textContent = 'Got it - one moment...';
+  setTimeout(() => {
+    restarting = false;
+    if (!listening) return;
+    try { launchRecognition(reason + '-triggered restart'); }
+    catch (err) { dlog(reason + '-triggered restart: start() threw: ' + err.message); }
+  }, RESTART_DELAY_MS);
+}
+
+function forceRestart() {
+  if (restarting || !listening || !recognition) return;
+  dlog('Watchdog: no activity for ' + HANG_THRESHOLD_MS + 'ms, forcing restart');
+  try { recognition.abort(); } catch (err) { dlog('abort() threw: ' + err); }
+  scheduleRestart('watchdog');
+}
+
+function startWatchdog() {
+  if (watchdogInterval) return;
+  markActivity();
+  watchdogInterval = setInterval(() => {
+    if (!listening) return;
+    if (Date.now() - lastActivityAt > HANG_THRESHOLD_MS) forceRestart();
+  }, WATCHDOG_TICK_MS);
+}
+
+function stopWatchdog() {
+  if (watchdogInterval) { clearInterval(watchdogInterval); watchdogInterval = null; }
+}
+
+if (!SpeechRecognitionAPI) {
+  statusEl.textContent = 'Speech recognition is not supported in this browser. Try Chrome or Edge.';
+  micBtn.disabled = true;
+} else {
+  dlog(`Burst mode (iPad Safari): ${useBurstMode}`);
+  recognition = createRecognition();
 }
 
 function startListening() {
   if (!recognition) return;
   listening = true;
+  restarting = false;
   startWatchdog();
+  micBtn.classList.add('listening');
+  micLabel.textContent = 'Stop dictation';
+  statusEl.textContent = 'Starting...';
   try {
-    recognition.start();
-    dlog('startListening: start() call succeeded (does not guarantee onstart will fire)');
-    micBtn.classList.add('listening');
-    micLabel.textContent = 'Stop dictation';
-    statusEl.textContent = 'Listening...';
+    launchRecognition('startListening');
   } catch (err) {
     dlog('startListening: start() threw immediately: ' + err.message);
-    // Recognition can throw if a previous session hasn't fully closed yet.
-    // Wait a beat and retry once.
+    // Can throw if a previous session hasn't fully closed yet - retry once.
     setTimeout(() => {
+      if (!listening) return;
       try {
-        recognition.start();
-        dlog('startListening retry: start() succeeded');
-        micBtn.classList.add('listening');
-        micLabel.textContent = 'Stop dictation';
-        statusEl.textContent = 'Listening...';
+        launchRecognition('startListening retry');
       } catch (err2) {
         dlog('startListening retry: start() threw again: ' + err2.message);
         statusEl.textContent = 'Could not start the microphone. Tap Start again.';
         listening = false;
         stopWatchdog();
+        micBtn.classList.remove('listening');
+        micLabel.textContent = 'Start dictation';
       }
-    }, 250);
+    }, RESTART_DELAY_MS);
   }
 }
 
 function stopListening() {
   listening = false;
+  restarting = false;
   stopWatchdog();
   if (recognition) {
     try { recognition.stop(); } catch (err) { /* already stopped */ }
