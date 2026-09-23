@@ -287,7 +287,11 @@
       <label for="size-range">Letter size</label>
       <input type="range" id="size-range" min="20" max="40" value="28">
     </div>
-    <span class="status" id="status">Tap "Start dictation" and speak. Say "full stop" or "comma" to add punctuation.</span>
+    <div class="size-controls">
+      <label for="pause-range">Sentence pause <span id="pause-value">1.6</span>s</label>
+      <input type="range" id="pause-range" min="1.0" max="3.0" step="0.1" value="1.6">
+    </div>
+    <span class="status" id="status">Tap "Start dictation" and speak. Pause at the end of each sentence, or say "full stop".</span>
     <button id="print-btn">Print / Save as PDF</button>
   </div>
 
@@ -346,6 +350,7 @@ function cleanupText(text) {
   text = text.replace(/[ \t]*\n[ \t]*/g, '\n');
   text = text.trim();
   text = text.replace(/\s+([.,!?])/g, '$1');
+  text = text.replace(/([.,!?])(?=[.,!?])/g, ''); // "..", ".," -> keep the last mark only
   text = text.replace(/([.!?]\s+)([a-z])/g, (m, p1, p2) => p1 + p2.toUpperCase());
   text = text.replace(/\bi\b/g, 'I');
   text = capitalizeFirst(text);
@@ -478,10 +483,63 @@ function markActivity() { lastActivityAt = Date.now(); }
 // ourselves when a session ends, or it would be lost on Stop/restart.
 let pendingInterim = '';
 
+// --- Automatic full stops from pauses ---
+// Safari (and Chrome) stream a result every ~200-300ms while someone is
+// talking. A gap longer than the threshold means they stopped speaking;
+// sentence-ending pauses are longer than mid-sentence hesitations. Gaps
+// are detected both across a finalised segment boundary and inside a
+// still-growing segment (Safari often keeps extending one segment across
+// a sentence break rather than finalising it).
+const pauseRange = document.getElementById('pause-range');
+const pauseValueEl = document.getElementById('pause-value');
+const urlPause = parseFloat(new URLSearchParams(location.search).get('pause'));
+if (!isNaN(urlPause)) pauseRange.value = Math.min(3, Math.max(1, urlPause));
+pauseValueEl.textContent = parseFloat(pauseRange.value).toFixed(1);
+pauseRange.addEventListener('input', () => { pauseValueEl.textContent = parseFloat(pauseRange.value).toFixed(1); });
+function pauseMs() { return Math.round(parseFloat(pauseRange.value) * 1000); }
+
+let lastInterimTime = 0;   // when we last received words being spoken
+let lastInterimText = '';  // the segment text at that moment
+let pauseMarks = [];       // word counts at which a sentence-ending pause was detected
+
+const COMMAND_TAIL = /\b(full stop|period|comma|question mark|exclamation (mark|point)|new line|new paragraph)$/i;
+
+function applyPauseMarks(text, marks) {
+  const words = text.trim().split(/\s+/).filter(Boolean);
+  for (const m of marks) {
+    if (m <= 0 || m >= words.length) continue;
+    if (COMMAND_TAIL.test(words.slice(0, m).join(' '))) continue; // student said the punctuation themselves
+    if (/[.,!?]$/.test(words[m - 1])) continue;
+    words[m - 1] += '.';
+    words[m] = capitalizeFirst(words[m]);
+  }
+  return words.join(' ');
+}
+
+function endFinalWithFullStop() {
+  const t = finalTranscript.trim();
+  if (!t || /[.,!?]$/.test(t) || COMMAND_TAIL.test(t)) return;
+  finalTranscript = t + '.';
+}
+
+function ensureTerminalFullStop() {
+  const before = finalTranscript;
+  endFinalWithFullStop();
+  if (finalTranscript !== before) {
+    dlog('Adding full stop at end of dictation');
+    pushHistory(before);
+    transcriptBox.value = finalTranscript;
+    renderHandwriting(finalTranscript);
+  }
+}
+
 function commitPendingInterim() {
   if (!pendingInterim.trim()) return;
-  const updated = appendChunk(finalTranscript, pendingInterim);
-  dlog('Committing unfinalised text: "' + pendingInterim + '"');
+  const marked = applyPauseMarks(pendingInterim, pauseMarks);
+  pauseMarks = [];
+  lastInterimText = '';
+  const updated = appendChunk(finalTranscript, marked);
+  dlog('Committing unfinalised text: "' + marked + '"');
   pendingInterim = '';
   if (updated !== finalTranscript) {
     pushHistory(finalTranscript);
@@ -517,6 +575,7 @@ function createRecognition() {
 
   r.onresult = (event) => {
     markActivity();
+    const now = Date.now();
     dlog(`onresult fired - resultIndex=${event.resultIndex}, results.length=${event.results.length}`);
     let interim = '';
     for (let i = event.resultIndex; i < event.results.length; i++) {
@@ -524,7 +583,10 @@ function createRecognition() {
       const isFinal = event.results[i].isFinal;
       dlog(`  [${i}] isFinal=${isFinal} text="${chunk}"`);
       if (isFinal) {
-        const updated = appendChunk(finalTranscript, chunk);
+        const marked = applyPauseMarks(chunk, pauseMarks);
+        pauseMarks = [];
+        lastInterimText = '';
+        const updated = appendChunk(finalTranscript, marked);
         if (updated !== finalTranscript) {
           pushHistory(finalTranscript);
           finalTranscript = updated;
@@ -533,10 +595,26 @@ function createRecognition() {
         interim += chunk;
       }
     }
+    if (interim.trim()) {
+      const gap = lastInterimTime ? now - lastInterimTime : 0;
+      if (gap >= pauseMs()) {
+        if (lastInterimText.trim()) {
+          // Same segment still growing after a long pause: mark a sentence break there.
+          const m = lastInterimText.trim().split(/\s+/).filter(Boolean).length;
+          if (!pauseMarks.includes(m)) { pauseMarks.push(m); dlog(`Pause of ${gap}ms inside segment -> full stop after word ${m}`); }
+        } else {
+          // New segment after a finalised one: the previous sentence ended.
+          const before = finalTranscript;
+          endFinalWithFullStop();
+          if (finalTranscript !== before) dlog(`Pause of ${gap}ms at segment boundary -> full stop`);
+        }
+      }
+      lastInterimTime = now;
+      lastInterimText = interim;
+    }
     pendingInterim = interim;
-    // Show spoken punctuation ("full stop", "comma") as symbols in the live
-    // text too, not only once a result is final.
-    transcriptBox.value = (finalTranscript + ' ' + applyPunctuationCommands(interim)).trim();
+    // Show pause-detected full stops and spoken punctuation in the live text too.
+    transcriptBox.value = (finalTranscript + ' ' + applyPunctuationCommands(applyPauseMarks(interim, pauseMarks))).trim();
     renderHandwriting(transcriptBox.value);
   };
 
@@ -552,7 +630,8 @@ function createRecognition() {
   r.onend = () => {
     dlog('onend fired' + (restarting ? ' (already restarting, ignoring)' : ''));
     commitPendingInterim();
-    if (!listening || restarting) return;
+    if (!listening) { ensureTerminalFullStop(); return; }
+    if (restarting) return;
     scheduleRestart('onend');
   };
 
@@ -615,6 +694,9 @@ function startListening() {
   if (!recognition) return;
   listening = true;
   restarting = false;
+  lastInterimTime = 0;
+  lastInterimText = '';
+  pauseMarks = [];
   startWatchdog();
   micBtn.classList.add('listening');
   micLabel.textContent = 'Stop dictation';
@@ -664,6 +746,8 @@ clearBtn.addEventListener('click', () => {
   if (finalTranscript.trim().length > 0) pushHistory(finalTranscript);
   finalTranscript = '';
   pendingInterim = '';
+  pauseMarks = [];
+  lastInterimText = '';
   transcriptBox.value = '';
   renderHandwriting('');
 });
