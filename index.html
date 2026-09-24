@@ -637,17 +637,18 @@ function createRecognition() {
   return r;
 }
 
-// Start (or restart) recognition. In burst mode the old object is thrown
-// away and a fresh one is built first.
+// Start (or restart) recognition. The old object is always thrown away and
+// a fresh one built: on iOS Safari, reusing a recognizer after a stop is a
+// documented cause of it silently never listening again.
 function launchRecognition(reason) {
-  if (useBurstMode) {
-    if (recognition) { try { recognition.abort(); } catch (err) { /* ignore */ } }
-    recognition = createRecognition();
-  }
+  if (recognition) { try { recognition.abort(); } catch (err) { /* ignore */ } }
+  recognition = createRecognition();
   recognition.start();
   markActivity();
   dlog(`${reason}: start() call succeeded`);
 }
+
+let lastStopTime = 0;
 
 function scheduleRestart(reason) {
   restarting = true;
@@ -701,31 +702,40 @@ function startListening() {
   micBtn.classList.add('listening');
   micLabel.textContent = 'Stop dictation';
   statusEl.textContent = 'Starting...';
-  try {
-    launchRecognition('startListening');
-  } catch (err) {
-    dlog('startListening: start() threw immediately: ' + err.message);
-    // Can throw if a previous session hasn't fully closed yet - retry once.
-    setTimeout(() => {
-      if (!listening) return;
-      try {
-        launchRecognition('startListening retry');
-      } catch (err2) {
-        dlog('startListening retry: start() threw again: ' + err2.message);
-        statusEl.textContent = 'Could not start the microphone. Tap Start again.';
-        listening = false;
-        stopWatchdog();
-        micBtn.classList.remove('listening');
-        micLabel.textContent = 'Start dictation';
-        undoBtn.disabled = false;
-      }
-    }, RESTART_DELAY_MS);
-  }
+  // Starting again too soon after a stop silently fails on iOS Safari (the
+  // audio session hasn't released yet), so wait out the remainder of the
+  // window before actually starting.
+  const sinceStop = Date.now() - lastStopTime;
+  const wait = (isIOS && isSafari && sinceStop < RESTART_DELAY_MS) ? RESTART_DELAY_MS - sinceStop : 0;
+  if (wait > 0) dlog(`startListening: waiting ${wait}ms for audio session to release`);
+  setTimeout(() => {
+    if (!listening) return;
+    try {
+      launchRecognition('startListening');
+    } catch (err) {
+      dlog('startListening: start() threw immediately: ' + err.message);
+      setTimeout(() => {
+        if (!listening) return;
+        try {
+          launchRecognition('startListening retry');
+        } catch (err2) {
+          dlog('startListening retry: start() threw again: ' + err2.message);
+          statusEl.textContent = 'Could not start the microphone. Tap Start again.';
+          listening = false;
+          stopWatchdog();
+          micBtn.classList.remove('listening');
+          micLabel.textContent = 'Start dictation';
+          undoBtn.disabled = false;
+        }
+      }, RESTART_DELAY_MS);
+    }
+  }, wait);
 }
 
 function stopListening() {
   listening = false;
   restarting = false;
+  lastStopTime = Date.now();
   stopWatchdog();
   if (recognition) {
     try { recognition.stop(); } catch (err) { /* already stopped */ }
