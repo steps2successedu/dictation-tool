@@ -289,6 +289,23 @@
   #spell-list .spell-entry{
     display:block;
   }
+  .spell-choice{ margin-top:18px; }
+  .spell-choice-btn{
+    display:block;
+    width:100%;
+    text-align:left;
+    background:#fff;
+    border:2px solid var(--rule);
+    border-radius:10px;
+    padding:12px 14px;
+    margin-bottom:10px;
+    font-family:'Patrick Hand',cursive;
+    font-size:1.5rem;
+    font-weight:400;
+    color:#213047;
+  }
+  .spell-choice-btn b{ color:var(--margin-red); font-weight:400; text-decoration:underline; }
+  .spell-choice-btn:hover{ background:var(--panel-bg); }
   #spell-clear{
     margin-top:14px;
     background:var(--panel-bg);
@@ -389,6 +406,10 @@
       <div class="page spell-page">
         <div class="margin-line"></div>
         <div id="spell-current" class="writing"><span class="placeholder">The word you say will appear here.</span></div>
+        <div id="spell-choice" class="spell-choice" hidden>
+          <p class="label">Which one do you mean? Tap it.</p>
+          <div id="spell-choice-options"></div>
+        </div>
       </div>
       <div class="spell-list-wrap">
         <p class="label">Words checked</p>
@@ -892,7 +913,8 @@ printBtn.addEventListener('click', () => window.print());
 sizeRange.addEventListener('input', () => {
   renderHandwriting(transcriptBox.value);
   renderSpellList();
-  renderSpellCurrent(spellEntries.length ? spellEntries[spellEntries.length - 1] : '');
+  const last = spellEntries.length ? spellEntries[spellEntries.length - 1] : null;
+  renderSpellCurrent(last && last.text ? last.text : '');
 });
 
 function renderHandwriting(text) {
@@ -951,13 +973,148 @@ let spellLastWords = [];  // the new words as of the previous result (committed 
 
 function cleanSpellWord(w) { return w.replace(/^[.,!?]+|[.,!?]+$/g, ''); }
 
+// The recognizer writes numbers as digits; a child asking how to spell
+// "seven" wants the word.
+const NUMBER_WORDS = {0:'zero',1:'one',2:'two',3:'three',4:'four',5:'five',6:'six',7:'seven',8:'eight',9:'nine',10:'ten',
+  11:'eleven',12:'twelve',13:'thirteen',14:'fourteen',15:'fifteen',16:'sixteen',17:'seventeen',18:'eighteen',19:'nineteen',
+  20:'twenty',30:'thirty',40:'forty',50:'fifty',60:'sixty',70:'seventy',80:'eighty',90:'ninety',100:'one hundred',1000:'one thousand'};
+function numberToWords(w) {
+  if (!/^\d+$/.test(w)) return w;
+  const n = parseInt(w, 10);
+  if (NUMBER_WORDS[n] !== undefined) return NUMBER_WORDS[n];
+  if (n < 100) { const t = Math.floor(n / 10) * 10, u = n % 10; return NUMBER_WORDS[t] + '-' + NUMBER_WORDS[u]; }
+  return w;
+}
+
+// Common homophones a primary student is likely to ask about. The
+// recognizer can't tell which one was meant, so the student chooses from
+// a short sentence for each.
+const HOMOPHONE_GROUPS = [
+  [['there','Put the book over there.'],['their','They lost their ball.'],["they're","They're coming to play."]],
+  [['to','I am going to school.'],['too','I want to come too.'],['two','I have two cats.']],
+  [['your','Is this your bag?'],["you're","You're my best friend."]],
+  [['its','The dog wagged its tail.'],["it's","It's raining today."]],
+  [['where','Where did you go?'],['wear','I wear a hat.'],['were','We were late.']],
+  [['here','Come over here.'],['hear','I can hear music.']],
+  [['see','I can see the sea.'],['sea','We swam in the sea.']],
+  [['be','I want to be a vet.'],['bee','The bee buzzed.']],
+  [['no','No, thank you.'],['know','I know the answer.']],
+  [['right','Turn right at the shop.'],['write','I write with a pencil.']],
+  [['hole','The dog dug a hole.'],['whole','I ate the whole cake.']],
+  [['one','I have one brother.'],['won','We won the game.']],
+  [['son','Her son is seven.'],['sun','The sun is hot.']],
+  [['sail','The boat has a sail.'],['sale','The shop has a sale.']],
+  [['tail','The cat has a long tail.'],['tale','She told a tale.']],
+  [['pair','A pair of shoes.'],['pear','I ate a pear.']],
+  [['bear','A bear lives in the woods.'],['bare','My feet are bare.']],
+  [['blue','The sky is blue.'],['blew','The wind blew.']],
+  [['flour','Cake is made with flour.'],['flower','A red flower grew.']],
+  [['hour','Wait one hour.'],['our','This is our house.']],
+  [['meet','Let us meet at three.'],['meat','We ate meat for dinner.']],
+  [['night','The stars come out at night.'],['knight','The knight rode a horse.']],
+  [['peace','The park was full of peace.'],['piece','A piece of cake.']],
+  [['plain','A plain white shirt.'],['plane','The plane took off.']],
+  [['rain','The rain fell.'],['reign','The queen will reign.'],['rein','Hold the horse by the rein.']],
+  [['road','Cross the road safely.'],['rode','I rode my bike.']],
+  [['weak','I felt weak and tired.'],['week','There are seven days in a week.']],
+  [['wood','The table is made of wood.'],['would','I would like some water.']],
+  [['which','Which one is yours?'],['witch','The witch had a broom.']],
+  [['whose','Whose pencil is this?'],["who's","Who's coming today?"]],
+  [['by','Sit by the window.'],['buy','I will buy some bread.'],['bye','Bye, see you tomorrow.']],
+  [['for','This gift is for you.'],['four','I have four pens.']],
+  [['new','I have new shoes.'],['knew','I knew the answer.']],
+  [['made','I made a cake.'],['maid','The maid cleaned the room.']],
+  [['mail','The mail came today.'],['male','A male lion has a mane.']],
+  [['brake','Press the brake to stop.'],['break','Do not break the glass.']],
+  [['cell','A cell in the body.'],['sell','They sell ice cream.']],
+  [['cent','One cent coin.'],['sent','I sent a letter.'],['scent','The scent of roses.']],
+  [['fair','That is not fair.'],['fare','Pay the bus fare.']],
+  [['great','That was a great game.'],['grate','Grate the cheese.']],
+  [['heal','The cut will heal.'],['heel','My heel hurts.']],
+  [['hi','Hi, how are you?'],['high','The bird flew high.']],
+  [['knot','Tie a knot in the rope.'],['not','I am not tired.']],
+  [['stair','I sat on the stair.'],['stare','Do not stare at people.']],
+  [['steal','Do not steal.'],['steel','The bridge is made of steel.']],
+  [['threw','She threw the ball.'],['through','Walk through the door.']],
+  [['waist','A belt goes around your waist.'],['waste','Do not waste food.']],
+  [['wait','Please wait here.'],['weight','Lift the heavy weight.']],
+  [['way','This is the way home.'],['weigh','Weigh the apples.']],
+  [['weather','The weather is sunny.'],['whether','I wonder whether it will rain.']],
+  [['allowed','We are allowed to play.'],['aloud','Read the story aloud.']],
+  [['board','Write on the board.'],['bored','I am bored.']],
+  [['ate','I ate my lunch.'],['eight','I am eight years old.']],
+  [['been','I have been to the zoo.'],['bean','Plant a bean seed.']],
+  [['deer','A deer ran past.'],['dear','Dear Grandma, hello.']],
+  [['hair','Brush your hair.'],['hare','The hare hopped away.']],
+  [['herd','A herd of cows.'],['heard','I heard a noise.']],
+  [['red','A red apple.'],['read','I read a book yesterday.']],
+  [['tide','The tide came in.'],['tied','I tied my shoes.']],
+  [['toe','I hurt my toe.'],['tow','The truck will tow the car.']],
+  [['sole','The sole of my shoe.'],['soul','Music is good for the soul.']],
+  [['some','Have some cake.'],['sum','Work out the sum.']],
+  [['past','We walked past the shop.'],['passed','She passed the test.']],
+  [['die','Plants die without water.'],['dye','Dye the shirt blue.']],
+  [['flew','The bird flew away.'],['flu','I had the flu.']],
+  [['groan','He let out a groan.'],['grown','You have grown tall.']],
+  [['knows','She knows the way.'],['nose','My nose is cold.']],
+  [['mist','Mist covered the hills.'],['missed','I missed the bus.']],
+  [['pale','His face was pale.'],['pail','A pail of water.']],
+  [['roll','Roll the ball.'],['role','She played the role of a queen.']],
+  [['seen','I have seen that film.'],['scene','The first scene of the play.']],
+  [['sew','Sew the button on.'],['so','I was so happy.'],['sow','Sow the seeds.']],
+  [['steak','We had steak for dinner.'],['stake','Hammer the stake in.']],
+  [['whole','I ate the whole pizza.'],['hole','There is a hole in my sock.']],
+];
+const HOMOPHONE_MAP = {};
+HOMOPHONE_GROUPS.forEach((g) => g.forEach(([w]) => { if (!HOMOPHONE_MAP[w]) HOMOPHONE_MAP[w] = g; }));
+
 function addSpellEntry(words) {
-  const text = words.map(cleanSpellWord).filter(Boolean).join(' ');
+  const text = words.map(cleanSpellWord).filter(Boolean).map(numberToWords).join(' ');
   if (!text) return;
-  spellEntries.push(text);
-  dlog('Spelling entry: "' + text + '"');
+  const key = text.toLowerCase();
+  if (HOMOPHONE_MAP[key]) {
+    spellEntries.push({ text: null, choices: HOMOPHONE_MAP[key] });
+    dlog('Spelling entry needs a choice: "' + text + '"');
+  } else {
+    spellEntries.push({ text });
+    dlog('Spelling entry: "' + text + '"');
+  }
   renderSpellList();
-  renderSpellCurrent(text);
+  renderSpellChoice();
+  if (!HOMOPHONE_MAP[key]) renderSpellCurrent(text);
+}
+
+function renderSpellChoice() {
+  const panel = document.getElementById('spell-choice');
+  const optionsEl = document.getElementById('spell-choice-options');
+  const entry = spellEntries.find((e) => e.text === null);
+  if (!entry) { panel.hidden = true; optionsEl.innerHTML = ''; return; }
+  optionsEl.innerHTML = '';
+  entry.choices.forEach(([word, sentence]) => {
+    const btn = document.createElement('button');
+    btn.className = 'spell-choice-btn';
+    // show the sentence with the target word highlighted
+    const re = new RegExp('\\b' + word.replace(/'/g, "'") + '\\b', 'i');
+    const m = sentence.match(re);
+    if (m) {
+      const i = m.index;
+      btn.appendChild(document.createTextNode(sentence.slice(0, i)));
+      const b = document.createElement('b'); b.textContent = sentence.substr(i, m[0].length); btn.appendChild(b);
+      btn.appendChild(document.createTextNode(sentence.slice(i + m[0].length)));
+    } else {
+      btn.textContent = word + ' - ' + sentence;
+    }
+    btn.addEventListener('click', () => {
+      entry.text = word;
+      dlog('Spelling choice: "' + word + '"');
+      renderSpellList();
+      renderSpellCurrent(word);
+      renderSpellChoice();
+    });
+    optionsEl.appendChild(btn);
+  });
+  panel.hidden = false;
+  spellCurrentEl.innerHTML = '';
 }
 
 function renderSpellCurrent(text) {
@@ -975,7 +1132,7 @@ function renderSpellList() {
   spellListEl.innerHTML = '';
   if (!spellEntries.length) return;
   const line = makeRuledDiv(Math.round(parseInt(sizeRange.value, 10) * 0.85));
-  line.textContent = spellEntries.join('\n');
+  line.textContent = spellEntries.map((e) => e.text === null ? '?' : e.text).join('\n');
   line.style.whiteSpace = 'pre-wrap';
   spellListEl.appendChild(line);
 }
@@ -1020,6 +1177,7 @@ document.getElementById('spell-clear').addEventListener('click', () => {
   spellEntries.length = 0;
   renderSpellList();
   renderSpellCurrent('');
+  renderSpellChoice();
 });
 
 document.querySelectorAll('.tab-btn').forEach((btn) => {
