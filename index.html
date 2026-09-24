@@ -242,6 +242,60 @@
     opacity:0.4;
   }
 
+  .tabs{
+    display:flex;
+    gap:6px;
+    margin-bottom:14px;
+  }
+  .tab-btn{
+    background:transparent;
+    color:var(--cover-blue);
+    border:2px solid var(--rule);
+    border-bottom:none;
+    border-radius:10px 10px 0 0;
+    padding:10px 20px;
+    opacity:0.7;
+  }
+  .tab-btn.active{
+    background:#fff;
+    opacity:1;
+    box-shadow:0 -2px 0 var(--cover-blue) inset;
+  }
+
+  .spell-layout{
+    display:grid;
+    grid-template-columns:minmax(0, 3fr) minmax(220px, 2fr);
+    gap:18px;
+    background:#dfe9ee;
+    border-radius:10px;
+    padding:22px;
+  }
+  @media (max-width:700px){
+    .spell-layout{ grid-template-columns:1fr; }
+  }
+  .spell-page{
+    min-height:260px;
+    padding:36px 28px 36px 64px;
+  }
+  .spell-list-wrap{
+    background:var(--paper);
+    border:1px solid #ddd6c4;
+    border-radius:2px;
+    box-shadow:0 2px 10px rgba(0,0,0,0.08);
+    padding:20px 22px;
+    min-height:260px;
+  }
+  .spell-list-wrap .label{ color:var(--cover-blue); }
+  #spell-list .spell-entry{
+    display:block;
+  }
+  #spell-clear{
+    margin-top:14px;
+    background:var(--panel-bg);
+    color:var(--cover-blue);
+    border:1px solid var(--rule);
+  }
+
   .gap{
     display:inline-block;
     min-width:0.4em;
@@ -262,7 +316,8 @@
     body{background:#fff; padding:0;}
     .controls, textarea, .label, header p, footer, .no-print{display:none !important;}
     header{margin-bottom:10px;}
-    .page-wrap{background:#fff; padding:0; border-radius:0;}
+    .page-wrap, .spell-layout{background:#fff; padding:0; border-radius:0;}
+    .tabs{display:none !important;}
     .page{box-shadow:none; border:none; border-radius:0; min-height:auto;}
     @page{ size:A4; margin:14mm; }
   }
@@ -278,6 +333,11 @@
       <p>Speak, check the words are right, then see it on primary handwriting lines.</p>
     </div>
   </header>
+
+  <div class="tabs no-print">
+    <button class="tab-btn active" data-tab="write">Writing</button>
+    <button class="tab-btn" data-tab="spell">Spelling</button>
+  </div>
 
   <div class="controls no-print">
     <button id="mic-btn"><span class="dot"></span><span id="mic-label">Start dictation</span></button>
@@ -295,6 +355,7 @@
     <button id="print-btn">Print / Save as PDF</button>
   </div>
 
+  <div id="tab-write">
   <p class="label no-print">Your words (edit to fix mistakes)</p>
   <textarea id="transcript" class="no-print" placeholder="What you say will appear here..."></textarea>
 
@@ -316,6 +377,23 @@
       <div class="margin-line"></div>
       <div id="writing-output" class="writing">
         <span class="placeholder">Your handwriting will appear here once you start dictating.</span>
+      </div>
+    </div>
+  </div>
+
+  </div><!-- /tab-write -->
+
+  <div id="tab-spell" hidden>
+    <p class="label no-print">Say one word, wait for it to appear, then say the next</p>
+    <div class="spell-layout">
+      <div class="page spell-page">
+        <div class="margin-line"></div>
+        <div id="spell-current" class="writing"><span class="placeholder">The word you say will appear here.</span></div>
+      </div>
+      <div class="spell-list-wrap">
+        <p class="label">Words checked</p>
+        <div id="spell-list" class="writing"></div>
+        <button id="spell-clear" class="no-print">Clear list</button>
       </div>
     </div>
   </div>
@@ -522,6 +600,7 @@ function endFinalWithFullStop() {
 }
 
 function ensureTerminalFullStop() {
+  if (mode === 'spell') return;
   const before = finalTranscript;
   endFinalWithFullStop();
   if (finalTranscript !== before) {
@@ -533,6 +612,7 @@ function ensureTerminalFullStop() {
 }
 
 function commitPendingInterim() {
+  if (mode === 'spell') { commitPendingSpell(); return; }
   if (!pendingInterim.trim()) return;
   const marked = applyPauseMarks(pendingInterim, pauseMarks);
   pauseMarks = [];
@@ -576,6 +656,7 @@ function createRecognition() {
     markActivity();
     const now = Date.now();
     dlog(`onresult fired - resultIndex=${event.resultIndex}, results.length=${event.results.length}`);
+    if (mode === 'spell') { handleSpellResult(event, now); return; }
     let interim = '';
     for (let i = event.resultIndex; i < event.results.length; i++) {
       const chunk = event.results[i][0].transcript;
@@ -697,6 +778,8 @@ function startListening() {
   lastInterimTime = 0;
   lastInterimText = '';
   pauseMarks = [];
+  spellConsumed = 0;
+  spellLastWords = [];
   startWatchdog();
   undoBtn.disabled = true;
   micBtn.classList.add('listening');
@@ -806,7 +889,11 @@ transcriptBox.addEventListener('input', () => {
 
 printBtn.addEventListener('click', () => window.print());
 
-sizeRange.addEventListener('input', () => renderHandwriting(transcriptBox.value));
+sizeRange.addEventListener('input', () => {
+  renderHandwriting(transcriptBox.value);
+  renderSpellList();
+  renderSpellCurrent(spellEntries.length ? spellEntries[spellEntries.length - 1] : '');
+});
 
 function renderHandwriting(text) {
   output.innerHTML = '';
@@ -816,7 +903,14 @@ function renderHandwriting(text) {
     return;
   }
 
-  const fontSize = parseInt(sizeRange.value, 10);
+  const line = makeRuledDiv(parseInt(sizeRange.value, 10));
+  line.appendChild(buildTappableContent(trimmed));
+  output.appendChild(line);
+}
+
+// Builds a div with the four-line handwriting ruling as its background,
+// sized so each wrapped line of text sits in its own band.
+function makeRuledDiv(fontSize) {
   const bandHeight = Math.round(fontSize * 1.7); // total height of one 4-line band
   const topGap = Math.round(bandHeight * 0.08);
   const midOffset = Math.round(bandHeight * 0.56);   // dotted midline (x-height)
@@ -842,10 +936,106 @@ function renderHandwriting(text) {
   line.style.lineHeight = bandHeight + 'px';
   line.style.paddingTop = '2px';
   line.style.paddingBottom = '4px';
-  line.appendChild(buildTappableContent(trimmed));
-
-  output.appendChild(line);
+  return line;
 }
+
+// ---------- Spelling tab ----------
+// One word (or short phrase) per entry. Each entry is added to the list
+// and never edited or replaced; the big page shows the latest one.
+let mode = 'write';
+const spellCurrentEl = document.getElementById('spell-current');
+const spellListEl = document.getElementById('spell-list');
+const spellEntries = [];
+let spellConsumed = 0;    // words of the current recognizer segment already turned into entries
+let spellLastWords = [];  // the new words as of the previous result (committed when a pause is detected)
+
+function cleanSpellWord(w) { return w.replace(/^[.,!?]+|[.,!?]+$/g, ''); }
+
+function addSpellEntry(words) {
+  const text = words.map(cleanSpellWord).filter(Boolean).join(' ');
+  if (!text) return;
+  spellEntries.push(text);
+  dlog('Spelling entry: "' + text + '"');
+  renderSpellList();
+  renderSpellCurrent(text);
+}
+
+function renderSpellCurrent(text) {
+  spellCurrentEl.innerHTML = '';
+  if (!text) {
+    spellCurrentEl.innerHTML = '<span class="placeholder">The word you say will appear here.</span>';
+    return;
+  }
+  const line = makeRuledDiv(Math.round(parseInt(sizeRange.value, 10) * 1.5));
+  line.textContent = text;
+  spellCurrentEl.appendChild(line);
+}
+
+function renderSpellList() {
+  spellListEl.innerHTML = '';
+  if (!spellEntries.length) return;
+  const line = makeRuledDiv(Math.round(parseInt(sizeRange.value, 10) * 0.85));
+  line.textContent = spellEntries.join('\n');
+  line.style.whiteSpace = 'pre-wrap';
+  spellListEl.appendChild(line);
+}
+
+function handleSpellResult(event, now) {
+  let interim = '';
+  for (let i = event.resultIndex; i < event.results.length; i++) {
+    const chunk = event.results[i][0].transcript;
+    const words = chunk.trim().split(/\s+/).filter(Boolean);
+    if (event.results[i].isFinal) {
+      addSpellEntry(words.slice(spellConsumed));
+      spellConsumed = 0;
+      spellLastWords = [];
+    } else {
+      interim += chunk;
+    }
+  }
+  const words = interim.trim().split(/\s+/).filter(Boolean);
+  if (words.length) {
+    const gap = lastInterimTime ? now - lastInterimTime : 0;
+    if (gap >= pauseMs() && spellLastWords.length) {
+      // Student paused after the previous word(s): that's one entry.
+      addSpellEntry(spellLastWords);
+      spellConsumed += spellLastWords.length;
+    }
+    lastInterimTime = now;
+    spellLastWords = words.slice(spellConsumed);
+    renderSpellCurrent(spellLastWords.join(' '));
+  }
+  pendingInterim = interim;
+}
+
+function commitPendingSpell() {
+  const words = pendingInterim.trim().split(/\s+/).filter(Boolean).slice(spellConsumed);
+  pendingInterim = '';
+  spellConsumed = 0;
+  spellLastWords = [];
+  if (words.length) addSpellEntry(words);
+}
+
+document.getElementById('spell-clear').addEventListener('click', () => {
+  spellEntries.length = 0;
+  renderSpellList();
+  renderSpellCurrent('');
+});
+
+document.querySelectorAll('.tab-btn').forEach((btn) => {
+  btn.addEventListener('click', () => {
+    if (listening) stopListening();
+    mode = btn.dataset.tab;
+    document.querySelectorAll('.tab-btn').forEach((b) => b.classList.toggle('active', b === btn));
+    document.getElementById('tab-write').hidden = mode !== 'write';
+    document.getElementById('tab-spell').hidden = mode !== 'spell';
+    undoBtn.hidden = mode === 'spell';
+    clearBtn.hidden = mode === 'spell';
+    statusEl.textContent = mode === 'spell'
+      ? 'Tap "Start dictation", then say one word at a time.'
+      : 'Tap "Start dictation" and speak. Pause at the end of each sentence, or say "full stop".';
+  });
+});
 
 // Turns the plain text into a mix of text nodes, tappable punctuation spans,
 // and drop-target "gaps" between words, so a student can either tap a stray
