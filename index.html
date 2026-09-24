@@ -1094,7 +1094,7 @@ function renderSpellChoice() {
     const btn = document.createElement('button');
     btn.className = 'spell-choice-btn';
     // show the sentence with the target word highlighted
-    const re = new RegExp('\\b' + word.replace(/'/g, "'") + '\\b', 'i');
+    const re = new RegExp('\\b' + word + '\\b', 'i');
     const m = sentence.match(re);
     if (m) {
       const i = m.index;
